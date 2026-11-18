@@ -1,0 +1,41 @@
+FROM python:3.11-slim
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.32 /uv /uvx /usr/local/bin/
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    PATH=/app/.venv/bin:$PATH \
+    HF_HOME=/models \
+    WHISPER_MODEL=base.en \
+    WHISPER_DEVICE=cpu \
+    WHISPER_COMPUTE_TYPE=int8
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install locked dependencies first so this layer is cached across code changes.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-cache
+
+# Non-root runtime user. /models is the Hugging Face cache and is backed by a
+# named volume; Podman copies this directory's ownership into a fresh volume.
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /models \
+    && chown -R appuser:appuser /models /app
+
+COPY --chown=appuser:appuser app.py live.py textfmt.py ./
+
+USER appuser
+
+EXPOSE 8000
+
+# Healthcheck is defined in docker-compose.yml (Podman ignores HEALTHCHECK in OCI images).
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--ws", "wsproto"]

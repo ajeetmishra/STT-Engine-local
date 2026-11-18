@@ -1,0 +1,74 @@
+name: whisper-stack
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Containerfile
+    image: localhost/whisper-stack-backend:latest
+    container_name: whisper-backend
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-base.en}
+      WHISPER_DEVICE: cpu
+      WHISPER_COMPUTE_TYPE: int8
+      WHISPER_CPU_THREADS: ${WHISPER_CPU_THREADS:-0}
+      WHISPER_BEAM_SIZE: "1"
+      WHISPER_VAD_FILTER: "true"
+      # Punctuated example Whisper imitates for casing/punctuation; set to "" to disable.
+      WHISPER_STYLE_PROMPT: ${WHISPER_STYLE_PROMPT:-Hello, welcome. This is a dictation, written with proper punctuation and capitalization.}
+      HF_HOME: /models
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Live dictation (WebSocket /ws/transcribe)
+      LIVE_STEP_SECONDS: "1.0"
+      LIVE_MAX_BUFFER_SECONDS: "12"
+      LIVE_MAX_SESSIONS: "2"
+      LIVE_MAX_SESSION_SECONDS: "600"
+      LIVE_ALLOWED_ORIGINS: http://localhost:8501,http://127.0.0.1:8501
+    ports:
+      - "8000:8000"
+    volumes:
+      - hf-cache:/models
+    networks:
+      - whisper-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Containerfile
+    image: localhost/whisper-stack-frontend:latest
+    container_name: whisper-frontend
+    environment:
+      BACKEND_URL: http://backend:8000
+      TRANSCRIBE_TIMEOUT: "300"
+      RECORDER_PAUSE_THRESHOLD: "3.0"
+      RECORDER_SAMPLE_RATE: "16000"
+      # The live WebSocket is opened by the browser, so it targets the host-published port.
+      LIVE_WS_URL: ""
+      LIVE_BACKEND_PORT: "8000"
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    networks:
+      - whisper-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+networks:
+  whisper-net:
+    driver: bridge
+
+volumes:
+  hf-cache:

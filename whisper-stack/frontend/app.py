@@ -132,7 +132,10 @@ def record_then_transcribe() -> None:
 def live_mode() -> None:
     st.caption(
         "Click the mic and speak. Words appear as they are recognised (grey = tentative). "
-        "Click again to stop; the text is then added to the transcript below."
+        "Click again to stop; the text is then added to the transcript below. "
+        "Choose **System / tab audio** to transcribe a video or other app playing on this "
+        "computer (Chrome/Edge: share a tab with *Share tab audio*, or the entire screen with "
+        "*Share system audio*)."
     )
     result = live_dictation(
         ws_url=LIVE_WS_URL, backend_port=LIVE_BACKEND_PORT, key="live_dictation", default=None

@@ -178,6 +178,27 @@ you speak:
 
 Click the mic again to stop. The final text is then added to the editable transcript.
 
+#### Transcribing a video or other app playing on the laptop
+
+Above the mic button, pick **System / tab audio** instead of **Microphone**, then click the
+button. The browser's screen-share picker opens:
+- **Chrome/Edge tab** (e.g. YouTube): choose the tab and leave **Share tab audio** on.
+- **Any app** (VLC, Teams, a desktop video player): choose **Entire screen** and tick
+  **Share system audio**. This option is offered on Windows only.
+
+Only the audio is used, and the video track is discarded right away. Stop with the button or
+the browser's **Stop sharing** bar. Either way the text is added to the transcript. Echo
+cancellation and noise suppression are off in this mode, because they degrade PC audio.
+
+Notes:
+- Firefox and Safari can't capture audio when sharing the screen. Use Chrome or Edge.
+- Streamlit's component iframe isn't granted `display-capture`, so the component asks the
+  top-level Streamlit page (same origin) to start the share. If no picker appears, open the
+  app directly at http://localhost:8501 rather than embedded in another page.
+- **No-code alternative:** enable Windows **Stereo Mix** (Sound settings → Recording devices)
+  or install a virtual audio cable. Then select it as the microphone for this site in the
+  browser and use **Microphone** mode.
+
 #### WebSocket protocol
 
 Use this if you want to write your own client.
@@ -232,6 +253,7 @@ Remove-Item Env:LOG_LEVEL; podman compose up -d --force-recreate backend   # bac
 | Port already in use | Change the left side of `ports:` in `docker-compose.yml`, e.g. `"18000:8000"`. If you move the backend port, also set the frontend's `LIVE_BACKEND_PORT` to match. |
 | Code changes don't show up after `up --build` | `podman-compose` rebuilds the image but keeps the running container. Add `--force-recreate`. |
 | Live mode: "Cannot connect to the live backend" | The backend must be running and port 8000 published, because the browser connects to it directly. The page's origin must be in `LIVE_ALLOWED_ORIGINS`. Opening the UI as `http://<hostname>:8501` needs that origin added. |
+| System audio: "No audio was shared" | In the picker, share a **tab** with *Share tab audio* on, or the **entire screen** with *Share system audio* ticked. Sharing a single window gives no audio. |
 | Live mode: "Too many live sessions" | Close other live tabs, or raise `LIVE_MAX_SESSIONS`. |
 | Live text lags further and further behind | The CPU can't keep up. Use `tiny.en`/`base.en`, raise `LIVE_STEP_SECONDS`, lower `LIVE_MAX_BUFFER_SECONDS`, or give the VM more cores. |
 

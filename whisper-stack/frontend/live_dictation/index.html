@@ -43,18 +43,34 @@
     border: 1px solid var(--border); border-radius: 8px; line-height: 1.5; font-size: 16px;
     white-space: pre-wrap; word-wrap: break-word;
   }
+  .source { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; align-self: flex-start; }
+  .source label { display: flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer; user-select: none; }
+  .source label + label { border-left: 1px solid var(--border); }
+  .source input { position: absolute; opacity: 0; pointer-events: none; }
+  .source label:has(input:checked) { background: var(--primary); color: #fff; }
+  .source label:has(input:focus-visible) { outline: 2px solid var(--primary); outline-offset: -2px; }
+  .source.locked label { cursor: not-allowed; opacity: .6; }
   .live .partial { color: var(--muted); font-style: italic; }
   .live .placeholder { color: var(--muted); }
 </style>
 </head>
 <body>
 <div class="wrap">
+  <div class="source" id="source" role="radiogroup" aria-label="Audio source">
+    <label><input type="radio" name="source" value="mic" checked> Microphone</label>
+    <label><input type="radio" name="source" value="system"> System / tab audio</label>
+  </div>
   <div class="controls">
     <button class="mic" id="mic" title="Start live dictation" aria-label="Start live dictation">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <svg id="icon-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <rect x="9" y="2" width="6" height="12" rx="3"></rect>
         <path d="M5 10a7 7 0 0 0 14 0"></path>
         <line x1="12" y1="17" x2="12" y2="22"></line>
+      </svg>
+      <svg id="icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden>
+        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+        <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+        <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
       </svg>
     </button>
     <div class="status">
@@ -140,6 +156,39 @@
   const statusEl = document.getElementById("status");
   const levelEl = document.getElementById("level");
   const liveEl = document.getElementById("live");
+  const sourceEl = document.getElementById("source");
+  const sourceInputs = [...sourceEl.querySelectorAll("input[name=source]")];
+  const iconMic = document.getElementById("icon-mic");
+  const iconSystem = document.getElementById("icon-system");
+
+  const SOURCES = {
+    mic: {
+      noun: "live dictation",
+      idle: "Click the mic and start speaking.",
+      placeholder: "Words appear here as you speak.",
+      listening: "Listening… click the mic to stop.",
+      again: "Click the mic to dictate more.",
+    },
+    system: {
+      noun: "system audio transcription",
+      idle: "Click the button, pick a tab or screen, and tick \"Share audio\".",
+      placeholder: "Words from the shared tab or system audio appear here.",
+      listening: "Transcribing shared audio… click the button (or \"Stop sharing\") to stop.",
+      again: "Click the button to transcribe more.",
+    },
+  };
+  let source = "mic";
+  const ui = () => SOURCES[source];
+
+  function setSource(next) {
+    source = next;
+    iconMic.hidden = source !== "mic";
+    iconSystem.hidden = source !== "system";
+    setState(state);
+    if (state === "idle") { setStatus(ui().idle); render(); }
+  }
+  sourceInputs.forEach((input) =>
+    input.addEventListener("change", () => input.checked && setSource(input.value)));
 
   function setStatus(text, isError = false) {
     statusEl.textContent = text;
@@ -151,7 +200,7 @@
     if (!committed && !partial) {
       const span = document.createElement("span");
       span.className = "placeholder";
-      span.textContent = state === "idle" ? "Words appear here as you speak." : "Listening…";
+      span.textContent = state === "idle" ? ui().placeholder : "Listening…";
       liveEl.append(span);
     } else {
       liveEl.append(document.createTextNode(committed.trimStart()));
@@ -170,10 +219,14 @@
     state = next;
     micBtn.classList.toggle("recording", state === "recording");
     micBtn.disabled = state === "connecting" || state === "finalizing";
-    const label = state === "recording" ? "Stop live dictation" : "Start live dictation";
+    const label = `${state === "recording" ? "Stop" : "Start"} ${ui().noun}`;
     micBtn.title = label;
     micBtn.setAttribute("aria-label", label);
     if (state !== "recording") levelEl.style.width = "0";
+    // The source can only change between sessions.
+    const locked = state !== "idle";
+    sourceEl.classList.toggle("locked", locked);
+    sourceInputs.forEach((input) => { input.disabled = locked; });
   }
 
   // ---- Session
@@ -211,15 +264,13 @@
     committed = ""; partial = ""; delivered = false;
     setState("connecting");
     render();
-    setStatus("Requesting microphone…");
-
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
+      stream = source === "system" ? await captureSystemAudio() : await captureMic();
     } catch (err) {
+      releaseAudio();
       setState("idle");
-      setStatus(`Microphone unavailable: ${err.message || err.name}. Allow mic access for this page.`, true);
+      render();
+      setStatus(err.userMessage || `Audio capture failed: ${err.message || err.name}`, true);
       return;
     }
 
@@ -243,8 +294,8 @@
         render();
         deliver();
         setState("idle");
-        setStatus(committed ? "Added to transcript below. Click the mic to dictate more."
-                            : "No speech detected. Click the mic to try again.");
+        setStatus(committed ? `Added to transcript below. ${ui().again}`
+                            : "No speech detected. Try again.");
       } else if (msg.type === "error") {
         fail(msg.message);
       }
@@ -262,6 +313,87 @@
         fail(`Connection to backend lost (code ${event.code}).`);
       }
     };
+  }
+
+  function captureError(message, cause) {
+    const err = new Error(message);
+    err.userMessage = message;
+    err.cause = cause;
+    return err;
+  }
+
+  async function captureMic() {
+    setStatus("Requesting microphone…");
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (err) {
+      throw captureError(`Microphone unavailable: ${err.message || err.name}. Allow mic access for this page.`, err);
+    }
+  }
+
+  // Audio from another tab or the whole system (e.g. a video playing), via screen sharing.
+  // Chrome/Edge only offer audio when sharing a tab ("Share tab audio") or, on Windows/ChromeOS,
+  // the entire screen ("Share system audio"). Firefox and Safari return video only.
+  //
+  // Streamlit's component iframe is not granted the `display-capture` permission policy, so
+  // getDisplayMedia() is blocked inside it. The component is served from the same origin as the
+  // Streamlit page, though, so it asks the top-level page (which may capture) to do it instead.
+  // The click on our button also activates ancestor frames, satisfying the user-gesture rule.
+  function displayMediaHost() {
+    const allowed = (doc) => !doc.featurePolicy || doc.featurePolicy.allowsFeature("display-capture");
+    let win = window;
+    for (;;) {
+      if (allowed(win.document)) return win;
+      if (win === win.parent) return null;
+      try {
+        void win.parent.document; // throws if the parent is cross-origin
+        win = win.parent;
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  async function captureSystemAudio() {
+    const host = displayMediaHost() || window;
+    const md = host.navigator.mediaDevices;
+    if (!md || !md.getDisplayMedia) {
+      throw captureError("This browser cannot capture tab/system audio. Use Chrome or Edge.");
+    }
+    setStatus("Pick a tab or screen to share, and tick \"Share audio\"…");
+    let display;
+    try {
+      display = await md.getDisplayMedia({
+        video: true, // required by the API; the video track is dropped immediately
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        systemAudio: "include",
+        selfBrowserSurface: "exclude",
+        preferCurrentTab: false,
+      });
+    } catch (err) {
+      if (err.name === "NotAllowedError") {
+        throw captureError(
+          "Sharing was cancelled or blocked. If no picker appeared, the browser blocked screen " +
+          "capture for this page; open the app directly (not embedded) in Chrome or Edge.", err);
+      }
+      throw captureError(`Screen/audio sharing failed: ${err.message || err.name}`, err);
+    }
+    display.getVideoTracks().forEach((t) => t.stop());
+    const audioTracks = display.getAudioTracks();
+    if (!audioTracks.length) {
+      throw captureError(
+        "No audio was shared. Share a browser tab with \"Share tab audio\" on, or the entire " +
+        "screen with \"Share system audio\" on (Chrome/Edge).");
+    }
+    // The browser's own "Stop sharing" bar ends the track: finish the session normally.
+    audioTracks[0].addEventListener("ended", () => {
+      if (state === "recording") stop();
+      else if (state === "connecting") fail("Sharing stopped before the backend was ready.");
+    });
+    // Build the stream in the realm that owns the tracks (the host page when delegated).
+    return new host.MediaStream(audioTracks);
   }
 
   async function startAudio() {
@@ -284,7 +416,7 @@
 
     setState("recording");
     render();
-    setStatus("Listening… click the mic to stop.");
+    setStatus(ui().listening);
   }
 
   function stop() {

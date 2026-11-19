@@ -18,6 +18,8 @@ services:
       WHISPER_STYLE_PROMPT: ${WHISPER_STYLE_PROMPT:-Hello, welcome. This is a dictation, written with proper punctuation and capitalization.}
       HF_HOME: /models
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Upload size limit for /transcribe (MP3/MP4 files can be large).
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-200}
       # Live dictation (WebSocket /ws/transcribe)
       LIVE_STEP_SECONDS: "1.0"
       LIVE_MAX_BUFFER_SECONDS: "12"
@@ -47,6 +49,9 @@ services:
     environment:
       BACKEND_URL: http://backend:8000
       TRANSCRIBE_TIMEOUT: "300"
+      # Sidebar MP3/MP4 upload: longer timeout, size limit matching backend MAX_UPLOAD_MB.
+      UPLOAD_TIMEOUT: "1800"
+      STREAMLIT_SERVER_MAX_UPLOAD_SIZE: ${MAX_UPLOAD_MB:-200}
       RECORDER_PAUSE_THRESHOLD: "3.0"
       RECORDER_SAMPLE_RATE: "16000"
       # The live WebSocket is opened by the browser, so it targets the host-published port.

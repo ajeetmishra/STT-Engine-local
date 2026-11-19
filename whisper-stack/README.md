@@ -154,6 +154,19 @@ Invoke-RestMethod -Uri http://localhost:8000/transcribe -Method Post -Form @{ fi
 
 Expected: `{"text":"The quick brown fox jumps over the lazy dog."}`
 
+### Transcribing an MP3 / MP4 file
+
+In the web app, use **Transcribe a file** in the left sidebar: browse to a local `.mp3` audio or `.mp4` video, then click **Transcribe file**. The text is added to the transcript box on the right. For a video, only the audio track is used. Long files are slow on CPU, so a 30-minute video can take several minutes (the frontend waits up to `UPLOAD_TIMEOUT`).
+
+The same endpoint works directly:
+
+```powershell
+curl.exe -s -F "file=@C:\path\to\talk.mp3" http://localhost:8000/transcribe
+curl.exe -s -F "file=@C:\path\to\video.mp4" http://localhost:8000/transcribe
+```
+
+Errors: `415` = unsupported format, `422` = the file could not be decoded (corrupt, or a video without an audio track), `413` = larger than `MAX_UPLOAD_MB`.
+
 Interactive API docs: **http://localhost:8000/docs** (WebSocket routes are not listed there)
 
 ### Live dictation
@@ -257,7 +270,7 @@ machine too.
 | `WHISPER_CPU_THREADS` | `0` | `0` = auto. Set to your physical core count to pin it. |
 | `WHISPER_BEAM_SIZE` | `1` | Greedy decoding (fastest). `5` gives slightly better accuracy at about 2–3× the cost. |
 | `WHISPER_VAD_FILTER` | `true` | Silero VAD skips silence. Faster, and avoids "hallucinated" text on silence. |
-| `MAX_UPLOAD_MB` | `50` | Upload size limit. |
+| `MAX_UPLOAD_MB` | `200` | Upload size limit (compose default; the code default is `50`). Also sets the frontend uploader limit. |
 | `HF_HOME` | `/models` | Hugging Face cache, backed by the `hf-cache` volume. |
 | `LOG_LEVEL` | `INFO` | Read from your shell/`.env`. `DEBUG` logs every live pass. |
 | `LIVE_STEP_SECONDS` | `1.0` | How often the live buffer is re-transcribed. Lower is snappier but uses more CPU. |
@@ -271,7 +284,9 @@ machine too.
 | Variable | Default | Notes |
 |---|---|---|
 | `BACKEND_URL` | `http://backend:8000` | Service-name DNS on `whisper-net`. |
-| `TRANSCRIBE_TIMEOUT` | `300` | Seconds to wait for the backend. |
+| `TRANSCRIBE_TIMEOUT` | `300` | Seconds to wait for the backend (mic recordings). |
+| `UPLOAD_TIMEOUT` | `1800` | Seconds to wait for the backend when transcribing an uploaded MP3/MP4 file. |
+| `STREAMLIT_SERVER_MAX_UPLOAD_SIZE` | `200` | Sidebar uploader limit in MB. Taken from `MAX_UPLOAD_MB` in compose. |
 | `RECORDER_PAUSE_THRESHOLD` | `3.0` | Seconds of silence before recording auto-stops. |
 | `RECORDER_SAMPLE_RATE` | `16000` | Whisper's native rate. Avoids resampling. |
 | `LIVE_WS_URL` | *(empty)* | Full WebSocket URL the **browser** uses for live mode. Empty means `ws://<page host>:LIVE_BACKEND_PORT/ws/transcribe`. |
@@ -339,7 +354,7 @@ Use `LIVE_STEP_SECONDS=1.5`–`2` if text starts to lag.
 
 | Want to… | Edit |
 |---|---|
-| Accept other formats (mp3, webm, …) | `backend/app.py`: relax `_is_wav()`. PyAV/ffmpeg decode most formats. |
+| Accept more formats (webm, ogg, …) | `backend/app.py`: add a signature to `_sniff_format()` (WAV, MP3, MP4 are accepted today) and the extension to the sidebar `file_uploader(type=...)` in `frontend/app.py`. PyAV/ffmpeg decode most formats. |
 | Return timestamps / segments | `backend/app.py`: build a list from `segments` (`segment.start`, `segment.end`, `segment.text`). |
 | Change transcript behaviour (append vs. replace) | `frontend/app.py`: the block that sets `st.session_state.transcript`. |
 | Change recorder look | `frontend/app.py`: `audio_recorder(...)` args (`recording_color`, `icon_size`, …). |

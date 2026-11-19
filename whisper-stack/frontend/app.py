@@ -1,6 +1,8 @@
 """Streamlit dictation UI: record in the browser, transcribe via the backend.
 
-Two modes:
+The sidebar also accepts an MP3/MP4 file upload, transcribed in one pass.
+
+Two mic modes:
 - Record-then-transcribe (default): record a clip, POST it to /transcribe.
 - Live dictation: the browser streams mic audio straight to the backend WebSocket
   (/ws/transcribe) and words appear as you speak.
@@ -17,6 +19,9 @@ from audio_recorder_streamlit import audio_recorder
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000").rstrip("/")
 REQUEST_TIMEOUT = float(os.getenv("TRANSCRIBE_TIMEOUT", "300"))
+# Uploaded files (long talks/videos) can take far longer than a mic clip on CPU.
+UPLOAD_TIMEOUT = float(os.getenv("UPLOAD_TIMEOUT", "1800"))
+MAX_UPLOAD_MB = int(os.getenv("STREAMLIT_SERVER_MAX_UPLOAD_SIZE", "200"))
 PAUSE_THRESHOLD = float(os.getenv("RECORDER_PAUSE_THRESHOLD", "3.0"))
 SAMPLE_RATE = int(os.getenv("RECORDER_SAMPLE_RATE", "16000"))
 # The live WebSocket is opened by the *browser*, so it needs a host-reachable URL, not
@@ -34,6 +39,8 @@ if "transcript" not in st.session_state:
     st.session_state.transcript = ""
 if "last_audio_hash" not in st.session_state:
     st.session_state.last_audio_hash = None
+if "last_upload_hash" not in st.session_state:
+    st.session_state.last_upload_hash = None
 if "live_session_ids" not in st.session_state:
     st.session_state.live_session_ids = set()
 
@@ -51,9 +58,9 @@ def backend_healthy() -> tuple[bool, str]:
         return False, str(exc)
 
 
-def transcribe(audio_bytes: bytes) -> str:
-    files = {"file": ("recording.wav", audio_bytes, "audio/wav")}
-    resp = requests.post(f"{BACKEND_URL}/transcribe", files=files, timeout=REQUEST_TIMEOUT)
+def transcribe_file(data: bytes, filename: str, mime: str, timeout: float) -> str:
+    files = {"file": (filename, data, mime)}
+    resp = requests.post(f"{BACKEND_URL}/transcribe", files=files, timeout=timeout)
     if resp.status_code != 200:
         try:
             detail = resp.json().get("detail", resp.text)
@@ -61,6 +68,27 @@ def transcribe(audio_bytes: bytes) -> str:
             detail = resp.text
         raise RuntimeError(f"Backend returned HTTP {resp.status_code}: {detail}")
     return resp.json().get("text", "")
+
+
+def transcribe(audio_bytes: bytes) -> str:
+    return transcribe_file(audio_bytes, "recording.wav", "audio/wav", REQUEST_TIMEOUT)
+
+
+def run_transcription(fn, timeout: float, spinner: str = "Transcribing…") -> str | None:
+    """Call ``fn()`` and show a friendly error on failure. Returns None if it failed."""
+    try:
+        with st.spinner(spinner):
+            return fn()
+    except requests.exceptions.ConnectionError:
+        st.error(
+            f"Cannot reach the backend at {BACKEND_URL}. "
+            "Check that the `backend` container is running: `podman compose ps`."
+        )
+    except requests.exceptions.Timeout:
+        st.error(f"Transcription timed out after {timeout:g}s.")
+    except (requests.exceptions.RequestException, RuntimeError, ValueError) as exc:
+        st.error(f"Transcription failed: {exc}")
+    return None
 
 
 def append_to_transcript(text: str) -> None:
@@ -92,19 +120,8 @@ def record_then_transcribe() -> None:
     audio_hash = hashlib.sha256(audio_bytes).hexdigest()
     if audio_hash == st.session_state.last_audio_hash:
         return
-    try:
-        with st.spinner("Transcribing…"):
-            text = transcribe(audio_bytes)
-    except requests.exceptions.ConnectionError:
-        st.error(
-            f"Cannot reach the backend at {BACKEND_URL}. "
-            "Check that the `backend` container is running: `podman compose ps`."
-        )
-    except requests.exceptions.Timeout:
-        st.error(f"Transcription timed out after {REQUEST_TIMEOUT:g}s.")
-    except (requests.exceptions.RequestException, RuntimeError, ValueError) as exc:
-        st.error(f"Transcription failed: {exc}")
-    else:
+    text = run_transcription(lambda: transcribe(audio_bytes), REQUEST_TIMEOUT)
+    if text is not None:
         st.session_state.last_audio_hash = audio_hash
         if text:
             append_to_transcript(text)
@@ -140,9 +157,43 @@ with st.sidebar:
     if st.button("Re-check"):
         st.rerun()
     st.divider()
+    st.header("Transcribe a file")
+    uploaded = st.file_uploader(
+        "MP3 audio or MP4 video",
+        type=["mp3", "mp4"],
+        key="upload_file",
+        help=f"Up to {MAX_UPLOAD_MB} MB. The text is added to the transcript on the right.",
+    )
+    if uploaded is not None:
+        is_video = uploaded.name.lower().endswith(".mp4")
+        if is_video:
+            st.video(uploaded)
+        else:
+            st.audio(uploaded)
+        if st.button("Transcribe file", type="primary", disabled=not ok):
+            data = uploaded.getvalue()
+            upload_hash = hashlib.sha256(data).hexdigest()
+            if upload_hash == st.session_state.last_upload_hash:
+                st.info("This file was already transcribed.")
+            else:
+                mime = uploaded.type or ("video/mp4" if is_video else "audio/mpeg")
+                text = run_transcription(
+                    lambda: transcribe_file(data, uploaded.name, mime, UPLOAD_TIMEOUT),
+                    UPLOAD_TIMEOUT,
+                    spinner=f"Transcribing {uploaded.name}… (long files can take a while)",
+                )
+                if text is not None:
+                    st.session_state.last_upload_hash = upload_hash
+                    if text:
+                        append_to_transcript(text)
+                        st.success("Added to transcript.")
+                    else:
+                        st.warning("No speech detected in the file.")
+    st.divider()
     if st.button("Clear transcript"):
         st.session_state.transcript = ""
         st.session_state.last_audio_hash = None
+        st.session_state.last_upload_hash = None
         st.rerun()
 
 st.title("🎙️ Local Dictation")

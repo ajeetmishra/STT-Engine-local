@@ -9,7 +9,7 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket
-from faster_whisper import WhisperModel
+from faster_whisper import WhisperModel, decode_audio
 
 from live import LiveTranscriber, pcm16_to_float32
 from textfmt import STYLE_PROMPT, format_text
@@ -71,8 +71,15 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Whisper STT Backend", version="1.0.0", lifespan=lifespan)
 
 
-def _is_wav(header: bytes) -> bool:
-    return len(header) >= 12 and header[0:4] == b"RIFF" and header[8:12] == b"WAVE"
+def _sniff_format(header: bytes) -> str | None:
+    """Return a temp-file suffix for supported containers, or None if unrecognised."""
+    if len(header) >= 12 and header[0:4] == b"RIFF" and header[8:12] == b"WAVE":
+        return ".wav"
+    if header[:3] == b"ID3" or (len(header) >= 2 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0):
+        return ".mp3"
+    if len(header) >= 8 and header[4:8] == b"ftyp":
+        return ".mp4"
+    return None
 
 
 @app.get("/health")
@@ -92,18 +99,29 @@ def transcribe(file: UploadFile = File(...)) -> dict:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail=f"File exceeds {MAX_UPLOAD_MB} MB limit.")
-    if not _is_wav(data[:12]):
-        raise HTTPException(status_code=415, detail="Only WAV (RIFF/WAVE) audio is accepted.")
+    suffix = _sniff_format(data[:12])
+    if suffix is None:
+        raise HTTPException(status_code=415, detail="Unsupported format. Upload WAV, MP3 or MP4.")
 
     tmp_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(data)
             tmp_path = tmp.name
+        del data
+
+        # Decode separately so a bad file (corrupt, or a video with no audio track)
+        # is reported as a client error rather than an inference failure.
+        try:
+            audio = decode_audio(tmp_path)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422, detail=f"Could not decode audio from the file: {exc}"
+            ) from exc
 
         started = time.perf_counter()
         segments, info = model.transcribe(
-            tmp_path,
+            audio,
             beam_size=BEAM_SIZE,
             language=LANGUAGE,
             vad_filter=VAD_FILTER,
